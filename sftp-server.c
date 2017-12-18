@@ -74,6 +74,10 @@ static int readonly;
 /* Requests that are allowed/denied */
 static char *request_whitelist, *request_blacklist;
 
+/* Force to use overwrite the file permissions for uploaded file and directories */
+static int force_permission = 0;
+static long file_force_perm, dir_force_perm;
+
 /* portable attributes, etc. */
 typedef struct Stat Stat;
 
@@ -679,6 +683,7 @@ process_open(u_int32_t id)
 	Attrib a;
 	char *name;
 	int r, handle, fd, flags, mode, status = SSH2_FX_FAILURE;
+	mode_t old_umask = 0;
 
 	if ((r = sshbuf_get_cstring(iqueue, &name, NULL)) != 0 ||
 	    (r = sshbuf_get_u32(iqueue, &pflags)) != 0 || /* portable flags */
@@ -688,6 +693,10 @@ process_open(u_int32_t id)
 	debug3("request %u: open flags %d", id, pflags);
 	flags = flags_from_portable(pflags);
 	mode = (a.flags & SSH2_FILEXFER_ATTR_PERMISSIONS) ? a.perm : 0666;
+	if (force_permission) {
+		mode = file_force_perm;
+		old_umask = umask(0);
+	}
 	logit("open \"%s\" flags %s mode 0%o",
 	    name, string_from_portable(pflags), mode);
 	if (readonly &&
@@ -708,6 +717,9 @@ process_open(u_int32_t id)
 				status = SSH2_FX_OK;
 			}
 		}
+	}
+	if (force_permission) {
+		umask(old_umask);
 	}
 	if (status != SSH2_FX_OK)
 		send_status(id, status);
@@ -1110,6 +1122,7 @@ process_mkdir(u_int32_t id)
 	Attrib a;
 	char *name;
 	int r, mode, status = SSH2_FX_FAILURE;
+	mode_t old_umask = 0;
 
 	if ((r = sshbuf_get_cstring(iqueue, &name, NULL)) != 0 ||
 	    (r = decode_attrib(iqueue, &a)) != 0)
@@ -1117,9 +1130,16 @@ process_mkdir(u_int32_t id)
 
 	mode = (a.flags & SSH2_FILEXFER_ATTR_PERMISSIONS) ?
 	    a.perm & 07777 : 0777;
+	if (force_permission) {
+		mode = dir_force_perm;
+		old_umask = umask(0);
+	}
 	debug3("request %u: mkdir", id);
 	logit("mkdir name \"%s\" mode 0%o", name, mode);
 	r = mkdir(name, mode);
+	if (force_permission) {
+		umask(old_umask);
+	}
 	status = (r == -1) ? errno_to_portable(errno) : SSH2_FX_OK;
 	send_status(id, status);
 	free(name);
@@ -1490,10 +1510,30 @@ sftp_server_usage(void)
 	fprintf(stderr,
 	    "usage: %s [-ehR] [-d start_directory] [-f log_facility] "
 	    "[-l log_level]\n\t[-P blacklisted_requests] "
-	    "[-p whitelisted_requests] [-u umask]\n"
+	    "[-p whitelisted_requests] [-u umask][-m force_permissions(e.g.:d775f664)]\n"
 	    "       %s -Q protocol_feature\n",
 	    __progname, __progname);
 	exit(1);
+}
+
+static int
+parse_force_perm_opt(char* str, char** next_start) {
+	long tmp_perm;
+	char* cp;
+	if (str[1] == '\0' ) {
+		return -1;
+	}
+	tmp_perm = strtol(str + 1, &cp, 8);
+	if (cp == str + 1 || tmp_perm < 0 || tmp_perm > 0777 || (tmp_perm == 0 && errno != 0) ) {
+		return -1;
+	}
+	*next_start = cp;
+	if (*str == 'f') {
+		file_force_perm = tmp_perm;
+	} else if (*str == 'd') {
+		dir_force_perm = tmp_perm;
+	}
+	return 0;
 }
 
 int
@@ -1505,6 +1545,7 @@ sftp_server_main(int argc, char **argv, struct passwd *user_pw)
 	SyslogFacility log_facility = SYSLOG_FACILITY_AUTH;
 	char *cp, *homedir = NULL, buf[4*4096];
 	long mask;
+	int parse_err;
 
 	extern char *optarg;
 	extern char *__progname;
@@ -1516,7 +1557,7 @@ sftp_server_main(int argc, char **argv, struct passwd *user_pw)
 	pw = pwcopy(user_pw);
 
 	while (!skipargs && (ch = getopt(argc, argv,
-	    "d:f:l:P:p:Q:u:cehR")) != -1) {
+	    "d:f:l:P:p:Q:u:m:cehR")) != -1) {
 		switch (ch) {
 		case 'Q':
 			if (strcasecmp(optarg, "requests") != 0) {
@@ -1575,6 +1616,20 @@ sftp_server_main(int argc, char **argv, struct passwd *user_pw)
 			    cp == optarg || (mask == 0 && errno != 0))
 				fatal("Invalid umask \"%s\"", optarg);
 			(void)umask((mode_t)mask);
+			break;
+		case 'm':
+			// -m f664d775
+			force_permission = 1;
+			cp = optarg;
+			while (*cp != '\0') {
+				parse_err = parse_force_perm_opt(cp, &cp);
+				if (parse_err) {
+					fatal("Invalid mode option\"%s\"", optarg);
+				}
+			}
+			if (file_force_perm == 0 || dir_force_perm == 0) {
+				fatal("Incomplete mode option \"%s\"", optarg);
+			}
 			break;
 		case 'h':
 		default:
