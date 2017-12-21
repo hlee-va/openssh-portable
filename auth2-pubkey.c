@@ -670,6 +670,7 @@ user_key_allowed2(struct passwd *pw, struct sshkey *key, char *file)
 static int
 user_key_command_allowed2(struct passwd *user_pw, struct sshkey *key)
 {
+	debug("user_key_command_allowed2 is called");
 	FILE *f = NULL;
 	int r, ok, found_key = 0;
 	struct passwd *pw;
@@ -679,8 +680,11 @@ user_key_command_allowed2(struct passwd *user_pw, struct sshkey *key)
 	char *tmp, *command = NULL, **av = NULL;
 	void (*osigchld)(int);
 
-	if (options.authorized_keys_command == NULL)
+	if (options.authorized_keys_command == NULL) {
+		debug("options.authorized_keys_command is null");
 		return 0;
+	}
+
 	if (options.authorized_keys_command_user == NULL) {
 		error("No user for AuthorizedKeysCommand specified, skipping");
 		return 0;
@@ -708,6 +712,7 @@ user_key_command_allowed2(struct passwd *user_pw, struct sshkey *key)
 		error("%s: sshkey_fingerprint failed", __func__);
 		goto out;
 	}
+	debug("finger print and uid is...:%s --- %s", key_fp, user_pw->pw_name);
 	if ((r = sshkey_to_base64(key, &keytext)) != 0) {
 		error("%s: sshkey_to_base64 failed: %s", __func__, ssh_err(r));
 		goto out;
@@ -739,7 +744,7 @@ user_key_command_allowed2(struct passwd *user_pw, struct sshkey *key)
 	}
 	/* Prepare a printable command for logs, etc. */
 	command = argv_assemble(ac, av);
-
+	debug("the auth command is: %s", command);
 	/*
 	 * If AuthorizedKeysCommand was run without arguments
 	 * then fall back to the old behaviour of passing the
@@ -763,7 +768,7 @@ user_key_command_allowed2(struct passwd *user_pw, struct sshkey *key)
 	temporarily_use_uid(pw);
 
 	ok = check_authkeys_file(f, options.authorized_keys_command, key, pw);
-
+	debug("Is authkeys okay? %d", ok);
 	fclose(f);
 	f = NULL;
 
