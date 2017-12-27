@@ -74,9 +74,10 @@ static int readonly;
 /* Requests that are allowed/denied */
 static char *request_whitelist, *request_blacklist;
 
-/* Force to use overwrite the file permissions for uploaded file and directories */
-static int force_permission = 0;
-static long file_force_perm, dir_force_perm;
+/* Overwrite the file permissions for uploaded file and directories */
+static int apply_default_perm = 0;
+static int force_default_perm = 0;
+static long file_default_perm, dir_default_perm;
 
 /* portable attributes, etc. */
 typedef struct Stat Stat;
@@ -693,8 +694,8 @@ process_open(u_int32_t id)
 	debug3("request %u: open flags %d", id, pflags);
 	flags = flags_from_portable(pflags);
 	mode = (a.flags & SSH2_FILEXFER_ATTR_PERMISSIONS) ? a.perm : 0666;
-	if (force_permission) {
-		mode = file_force_perm;
+	if (apply_default_perm) {
+		mode = file_default_perm;
 		old_umask = umask(0);
 	}
 	logit("open \"%s\" flags %s mode 0%o",
@@ -718,7 +719,7 @@ process_open(u_int32_t id)
 			}
 		}
 	}
-	if (force_permission) {
+	if (apply_default_perm) {
 		umask(old_umask);
 	}
 	if (status != SSH2_FX_OK)
@@ -922,9 +923,14 @@ process_setstat(u_int32_t id)
 	}
 	if (a.flags & SSH2_FILEXFER_ATTR_PERMISSIONS) {
 		logit("set \"%s\" mode %04o", name, a.perm);
-		r = chmod(name, a.perm & 07777);
-		if (r == -1)
-			status = errno_to_portable(errno);
+		if (force_default_perm) {
+			logit("force perm in effect, failed to set permission");
+			status = SSH2_FX_PERMISSION_DENIED;
+		} else {
+			r = chmod(name, a.perm & 07777);
+			if (r == -1)
+				status = errno_to_portable(errno);
+		}
 	}
 	if (a.flags & SSH2_FILEXFER_ATTR_ACMODTIME) {
 		char buf[64];
@@ -975,13 +981,18 @@ process_fsetstat(u_int32_t id)
 		}
 		if (a.flags & SSH2_FILEXFER_ATTR_PERMISSIONS) {
 			logit("set \"%s\" mode %04o", name, a.perm);
+			if (force_default_perm) {
+				logit("force perm in effect, failed to set permission");
+				status = SSH2_FX_PERMISSION_DENIED;
+			} else {
 #ifdef HAVE_FCHMOD
-			r = fchmod(fd, a.perm & 07777);
+				r = fchmod(fd, a.perm & 07777);
 #else
-			r = chmod(name, a.perm & 07777);
+				r = chmod(name, a.perm & 07777);
 #endif
-			if (r == -1)
-				status = errno_to_portable(errno);
+				if (r == -1)
+					status = errno_to_portable(errno);
+			}
 		}
 		if (a.flags & SSH2_FILEXFER_ATTR_ACMODTIME) {
 			char buf[64];
@@ -1130,14 +1141,14 @@ process_mkdir(u_int32_t id)
 
 	mode = (a.flags & SSH2_FILEXFER_ATTR_PERMISSIONS) ?
 	    a.perm & 07777 : 0777;
-	if (force_permission) {
-		mode = dir_force_perm;
+	if (apply_default_perm) {
+		mode = dir_default_perm;
 		old_umask = umask(0);
 	}
 	debug3("request %u: mkdir", id);
 	logit("mkdir name \"%s\" mode 0%o", name, mode);
 	r = mkdir(name, mode);
-	if (force_permission) {
+	if (apply_default_perm) {
 		umask(old_umask);
 	}
 	status = (r == -1) ? errno_to_portable(errno) : SSH2_FX_OK;
@@ -1510,7 +1521,7 @@ sftp_server_usage(void)
 	fprintf(stderr,
 	    "usage: %s [-ehR] [-d start_directory] [-f log_facility] "
 	    "[-l log_level]\n\t[-P blacklisted_requests] "
-	    "[-p whitelisted_requests] [-u umask][-m force_permissions(e.g.:d775f664)]\n"
+	    "[-p whitelisted_requests] [-u umask][-m expected_permissions(e.g.:d775f664 or f644d755!)]\n"
 	    "       %s -Q protocol_feature\n",
 	    __progname, __progname);
 	exit(1);
@@ -1529,9 +1540,9 @@ parse_force_perm_opt(char* str, char** next_start) {
 	}
 	*next_start = cp;
 	if (*str == 'f') {
-		file_force_perm = tmp_perm;
+		file_default_perm = tmp_perm;
 	} else if (*str == 'd') {
-		dir_force_perm = tmp_perm;
+		dir_default_perm = tmp_perm;
 	}
 	return 0;
 }
@@ -1543,7 +1554,7 @@ sftp_server_main(int argc, char **argv, struct passwd *user_pw)
 	int i, r, in, out, max, ch, skipargs = 0, log_stderr = 0;
 	ssize_t len, olen, set_size;
 	SyslogFacility log_facility = SYSLOG_FACILITY_AUTH;
-	char *cp, *homedir = NULL, buf[4*4096];
+	char *cp, *param, *homedir = NULL, buf[4*4096];
 	long mask;
 	int parse_err;
 
@@ -1619,17 +1630,24 @@ sftp_server_main(int argc, char **argv, struct passwd *user_pw)
 			break;
 		case 'm':
 			// -m f664d775
-			force_permission = 1;
-			cp = optarg;
+			apply_default_perm = 1;
+			param = xstrdup(optarg);
+			len = strlen(param) - 1;
+			if (param[len] == '!') {
+				force_default_perm = 1;
+				param[len] = '\0';
+			}
+			cp = param;
 			while (*cp != '\0') {
 				parse_err = parse_force_perm_opt(cp, &cp);
 				if (parse_err) {
 					fatal("Invalid mode option\"%s\"", optarg);
 				}
 			}
-			if (file_force_perm == 0 || dir_force_perm == 0) {
+			if (file_default_perm == 0 || dir_default_perm == 0) {
 				fatal("Incomplete mode option \"%s\"", optarg);
 			}
+			free(param);
 			break;
 		case 'h':
 		default:
