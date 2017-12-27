@@ -74,7 +74,7 @@ static int readonly;
 /* Requests that are allowed/denied */
 static char *request_whitelist, *request_blacklist;
 
-/* Overwrite the file permissions for uploaded file and directories */
+/* Overwrite the permissions for uploaded file and directories */
 static int apply_default_perm = 0;
 static int force_default_perm = 0;
 static long file_default_perm, dir_default_perm;
