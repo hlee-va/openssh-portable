@@ -77,7 +77,7 @@ static char *request_whitelist, *request_blacklist;
 /* Overwrite the permissions for uploaded file and directories */
 static int apply_default_perm = 0;
 static int force_default_perm = 0;
-static long file_default_perm, dir_default_perm;
+static long file_default_perm = 0, dir_default_perm = 0;
 
 /* portable attributes, etc. */
 typedef struct Stat Stat;
