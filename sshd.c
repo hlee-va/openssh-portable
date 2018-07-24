@@ -1633,8 +1633,10 @@ main(int ac, char **av)
 	else if (strcasecmp(config_file_name, "none") != 0)
 		load_server_config(config_file_name, &cfg);
 
+	debug3("parsing server config");
 	parse_server_config(&options, rexeced_flag ? "rexec" : config_file_name,
 	    &cfg, NULL);
+	debug3("server config parsed");
 
 	seed_rng();
 
